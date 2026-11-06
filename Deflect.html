@@ -17,6 +17,10 @@ kbd{font-family:ui-monospace,monospace;border:1px solid var(--muted);border-radi
 #wrap{width:100%;max-width:900px}
 #wrap:fullscreen,#wrap.pfs{max-width:none;display:flex;align-items:center;justify-content:center;background:#000}
 #wrap.pfs{position:fixed;inset:0;z-index:99}
+#wrap{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+body:has(.pfs){overflow:hidden}
+#rot{display:none;position:fixed;inset:0;z-index:100;background:#0e1014;color:#e8eaee;align-items:center;justify-content:center;text-align:center;font-size:20px;padding:24px}
+@media (orientation:portrait) and (pointer:coarse){#rot{display:flex}}
 #wrap:fullscreen canvas,#wrap.pfs canvas{width:min(100vw,150vh);max-width:none;border-radius:0}
 button{font:inherit;font-size:13px;color:var(--fg);background:transparent;border:1px solid var(--muted);border-radius:6px;padding:4px 10px;cursor:pointer}
 </style>
@@ -25,7 +29,8 @@ button{font:inherit;font-size:13px;color:var(--fg);background:transparent;border
 <h1>Deflect</h1>
 <div id="wrap"><canvas id="c"></canvas></div>
 <button id="fs" type="button">⛶ Fullscreen (F)</button>
-<p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>←</kbd><kbd>→</kbd> swing the stick (it can’t pass behind you) · <kbd>Space</kbd> restart · <kbd>F</kbd> fullscreen<br>Touch a boss’s body with your stick to defeat it (every fifth boss is a giant with a health bar). Its sword can be deflected, but not let near your circle.</p>
+<div id="rot">Rotate your device to landscape to play</div>
+<p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>←</kbd><kbd>→</kbd> swing the stick (it can’t pass behind you) · <kbd>Space</kbd> restart · <kbd>F</kbd> fullscreen<br>🎮 Controller: left stick moves, right stick swings, A restarts<br>📱 Touch (landscape): left thumb moves, right thumb drags left/right to swing<br>Touch a boss’s body with your stick to defeat it (every fifth boss is a giant with a health bar). Its sword can be deflected, but not let near your circle.</p>
 <script>
 const W=900,H=600,R0=16,BASEL=52,T=3,GAP=.7,LIM=Math.PI-GAP/2,FACE=-Math.PI/2;
 let R=R0; // current player radius (shrinks with the Shrink power-up)
@@ -48,6 +53,65 @@ function toggleFS(){
   Promise.resolve(p).catch(()=>w.classList.add("pfs")); // fallback: fill the window
 }
 document.getElementById("fs").onclick=function(){toggleFS();this.blur();};
+
+// Gamepad (standard mapping): left stick / d-pad move, right stick X / bumpers swing, A or Start restarts
+const pad={mx:0,my:0,sw:0};let padPrevA=false;
+const dz=v=>Math.abs(v)<.15?0:Math.sign(v)*(Math.abs(v)-.15)/.85;
+function pollPad(){
+  pad.mx=tp.mx;pad.my=tp.my;pad.sw=tp.sw;
+  const gps=navigator.getGamepads?navigator.getGamepads():[];
+  let g=null;for(const p of gps)if(p&&p.connected){g=p;break;}
+  if(!g)return;
+  const b=i=>g.buttons[i]&&g.buttons[i].pressed?1:0;
+  let lx=g.axes[0]||0,ly=g.axes[1]||0;
+  const m=Math.hypot(lx,ly);
+  if(m<.15){lx=ly=0}else{const k=Math.min(1,(m-.15)/.85)/m;lx*=k;ly*=k}
+  pad.mx=cl(pad.mx+lx+b(15)-b(14),-1,1);pad.my=cl(pad.my+ly+b(13)-b(12),-1,1);
+  pad.sw=cl(pad.sw+dz(g.axes[2]||0)+b(5)-b(4),-1,1);
+  const a=b(0)||b(9);if(a&&!padPrevA&&over)reset();padPrevA=!!a;
+}
+
+// Touch: left half = floating move stick, right half = floating swing stick (horizontal drag)
+const isTouch=matchMedia("(pointer:coarse)").matches,wrap=document.getElementById("wrap");
+const tp={mx:0,my:0,sw:0},tch={L:null,R:null},TR=60;let fsTried=false;
+if(isTouch)wrap.classList.add("pfs"); // fill the window on phones/tablets
+function tUpdate(){
+  tp.mx=tp.my=tp.sw=0;
+  const l=tch.L,r=tch.R;
+  if(l){const vx=(l.x-l.ox)/TR,vy=(l.y-l.oy)/TR,m=Math.hypot(vx,vy);if(m>.12){const s=Math.min(1,m)/m;tp.mx=vx*s;tp.my=vy*s;}}
+  if(r){const v=(r.x-r.ox)/TR;if(Math.abs(v)>.12)tp.sw=cl(v*1.5,-1,1);}
+}
+function tMove(k,t){
+  const s=tch[k];s.x=t.clientX;s.y=t.clientY;
+  const dx=s.x-s.ox,dy=s.y-s.oy,d=Math.hypot(dx,dy);
+  if(k==="L"&&d>TR){s.ox=s.x-dx/d*TR;s.oy=s.y-dy/d*TR;} // origin trails the thumb
+  if(k==="R"&&Math.abs(dx)>TR)s.ox=s.x-Math.sign(dx)*TR;
+}
+wrap.addEventListener("touchstart",e=>{
+  e.preventDefault();
+  if(!fsTried&&!document.fullscreenElement&&wrap.requestFullscreen){fsTried=true;
+    wrap.requestFullscreen().then(()=>{if(screen.orientation&&screen.orientation.lock)screen.orientation.lock("landscape").catch(()=>{});}).catch(()=>{});}
+  if(over){reset();return;}
+  const rc=wrap.getBoundingClientRect();
+  for(const t of e.changedTouches){
+    const k=t.clientX<rc.left+rc.width/2?"L":"R";
+    if(!tch[k])tch[k]={id:t.identifier,ox:t.clientX,oy:t.clientY,x:t.clientX,y:t.clientY};
+  }
+  tUpdate();
+},{passive:false});
+wrap.addEventListener("touchmove",e=>{
+  e.preventDefault();
+  for(const t of e.changedTouches)for(const k of ["L","R"])if(tch[k]&&tch[k].id===t.identifier)tMove(k,t);
+  tUpdate();
+},{passive:false});
+const tEnd=e=>{
+  e.preventDefault();
+  for(const t of e.changedTouches)for(const k of ["L","R"])if(tch[k]&&tch[k].id===t.identifier)tch[k]=null;
+  tUpdate();
+};
+wrap.addEventListener("touchend",tEnd,{passive:false});
+wrap.addEventListener("touchcancel",tEnd,{passive:false});
+wrap.addEventListener("contextmenu",e=>e.preventDefault());
 function devJump(n){
   if(over)reset();
   level=Math.max(1,n);boss=null;enemies=[];spawnT=1.5;P.hp=P.maxhp;nextBoss=score+10+3*level;
@@ -206,7 +270,7 @@ function step(dt){
   R+=(R0*Math.max(.5,Math.pow(.94,cnt[5]))-R)*(1-Math.exp(-8*dt));P.r=R;
 
   // circle movement (facing is locked upward)
-  const ax=(keys.KeyD?1:0)-(keys.KeyA?1:0),ay=(keys.KeyS?1:0)-(keys.KeyW?1:0),acc=1200*(1+.05*cnt[2]);
+  const ax=cl((keys.KeyD?1:0)-(keys.KeyA?1:0)+pad.mx,-1,1),ay=cl((keys.KeyS?1:0)-(keys.KeyW?1:0)+pad.my,-1,1),acc=1200*(1+.05*cnt[2]);
   P.vx+=ax*acc*dt;P.vy+=ay*acc*dt;
   const f=Math.exp(-3.5*dt);P.vx*=f;P.vy*=f;P.x+=P.vx*dt;P.y+=P.vy*dt;walls(P);
 
@@ -214,7 +278,7 @@ function step(dt){
   const sw=1+.05*cnt[1];
   P.L+=(BASEL+6*cnt[0]-P.L)*(1-Math.exp(-8*dt));
   P.ii=1/(INERTIA*Math.pow(P.L/BASEL,1.5)*(1+.12*cnt[3]));
-  const tq=(keys.ArrowRight?1:0)-(keys.ArrowLeft?1:0);
+  const tq=cl((keys.ArrowRight?1:0)-(keys.ArrowLeft?1:0)+pad.sw,-1,1);
   P.om+=tq*55*sw*dt;P.om*=Math.exp(-4*dt);P.om=cl(P.om,-16*sw,16*sw);
   P.th+=P.om*dt;
   if(P.th>LIM){P.th=LIM;if(P.om>0)P.om*=-.3}else if(P.th<-LIM){P.th=-LIM;if(P.om<0)P.om*=-.3}
@@ -416,6 +480,19 @@ function draw(){
     const x=W/2+(i-(act.length-1)/2)*70;
     drawIcon(ty,x-12,26,9);ctx.fillStyle=TYPES[ty].c;ctx.fillText("×"+cnt[ty],x+2,31);
   });
+  { // touch stick indicators and first-run hint
+    const cr=cv.getBoundingClientRect(),sc=W/cr.width;
+    for(const k of ["L","R"]){
+      const s=tch[k];if(!s)continue;
+      const bx=(s.ox-cr.left)*sc,by=(s.oy-cr.top)*sc,kx=(s.x-cr.left)*sc,ky=k==="R"?by:(s.y-cr.top)*sc;
+      ctx.globalAlpha=.3;ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.beginPath();ctx.arc(bx,by,TR*sc,0,6.283);ctx.stroke();
+      ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(kx,ky,16*sc,0,6.283);ctx.fill();ctx.globalAlpha=1;
+    }
+    if(isTouch&&t<10&&!tch.L&&!tch.R){
+      ctx.globalAlpha=.5;ctx.fillStyle="#fff";ctx.font="600 16px system-ui,sans-serif";ctx.textAlign="center";
+      ctx.fillText("Left thumb: move  ·  Right thumb: drag left/right to swing",W/2,H-24);ctx.globalAlpha=1;
+    }
+  }
   if(dev){ctx.textAlign="left";ctx.fillStyle="#ff8a6b";ctx.font="600 13px ui-monospace,monospace";
     ctx.fillText("DEV MODE · type a level number (Enter or pause to jump) · B = spawn boss · ` = exit"+(devBuf?"   → "+devBuf:""),16,H-14);}
   ctx.textAlign="center";
@@ -427,13 +504,15 @@ function draw(){
   if(over){
     ctx.fillStyle="rgba(0,0,0,.55)";ctx.fillRect(0,0,W,H);
     ctx.fillStyle="#fff";ctx.font="700 40px system-ui,sans-serif";ctx.fillText("You were hit",W/2,H/2-8);
-    ctx.font="18px system-ui,sans-serif";ctx.fillText("Score "+score+" · press Space to restart",W/2,H/2+28);
+    ctx.font="18px system-ui,sans-serif";ctx.fillText("Score "+score+" · "+(isTouch?"tap the screen":"press Space")+" to restart",W/2,H/2+28);
   }
 }
 
 let last=performance.now();
 function loop(now){
+  if(matchMedia("(orientation:portrait) and (pointer:coarse)").matches){last=now;requestAnimationFrame(loop);return;} // paused until landscape
   const dt=Math.min((now-last)/1000,1/30);last=now;
+  pollPad();
   bgHue+=((210+(level-1)*47)-bgHue)*(1-Math.exp(-2*dt));
   if(devBuf&&now-devT>800){devJump(parseInt(devBuf,10));devBuf="";}
   if(!over){
